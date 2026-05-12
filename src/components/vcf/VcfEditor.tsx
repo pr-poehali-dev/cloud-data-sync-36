@@ -27,7 +27,7 @@ interface VcfContact {
   fn: string;
   firstName: string;
   lastName: string;
-  phone: string;
+  phones: string[];
   email: string;
   org: string;
   title: string;
@@ -35,42 +35,96 @@ interface VcfContact {
   raw: string[];
 }
 
+// Decode Quoted-Printable encoded string (UTF-8 bytes)
+function decodeQP(str: string): string {
+  try {
+    const cleaned = str.replace(/=\r?\n/g, ""); // soft line breaks
+    const bytes = cleaned.replace(/=([0-9A-Fa-f]{2})/g, (_, hex) =>
+      String.fromCharCode(parseInt(hex, 16))
+    );
+    return decodeURIComponent(escape(bytes));
+  } catch {
+    return str;
+  }
+}
+
+// Unfold and join multi-line values, then decode if needed
+function unfoldLines(lines: string[]): string[] {
+  const result: string[] = [];
+  for (let i = 0; i < lines.length; i++) {
+    let line = lines[i];
+    // VCF soft line wrapping: continuation lines start with space or tab
+    while (i + 1 < lines.length && /^[ \t]/.test(lines[i + 1])) {
+      i++;
+      line += lines[i].replace(/^[ \t]/, "");
+    }
+    result.push(line);
+  }
+  return result;
+}
+
+function getFieldValue(lines: string[], keyPrefix: string): string {
+  const upper = keyPrefix.toUpperCase();
+  const line = lines.find((l) => l.toUpperCase().startsWith(upper));
+  if (!line) return "";
+  const colonIdx = line.indexOf(":");
+  if (colonIdx === -1) return "";
+  const params = line.slice(0, colonIdx).toUpperCase();
+  const value = line.slice(colonIdx + 1).trim();
+  if (params.includes("QUOTED-PRINTABLE")) return decodeQP(value);
+  return value;
+}
+
+function getAllFieldValues(lines: string[], keyPrefix: string): string[] {
+  const upper = keyPrefix.toUpperCase();
+  return lines
+    .filter((l) => l.toUpperCase().startsWith(upper))
+    .map((line) => {
+      const colonIdx = line.indexOf(":");
+      if (colonIdx === -1) return "";
+      const params = line.slice(0, colonIdx).toUpperCase();
+      const value = line.slice(colonIdx + 1).trim();
+      return params.includes("QUOTED-PRINTABLE") ? decodeQP(value) : value;
+    })
+    .filter(Boolean);
+}
+
 function parseVcf(content: string): VcfContact[] {
   const blocks = content.split(/END:VCARD/i).filter((b) => b.trim());
   return blocks.map((block, i) => {
-    const lines = block.split(/\r?\n/).filter((l) => l.trim());
-    const get = (key: string) => {
-      const line = lines.find((l) =>
-        l.toUpperCase().startsWith(key.toUpperCase() + ":")
-      );
-      return line ? line.slice(key.length + 1).trim() : "";
-    };
-    const fn = get("FN");
-    const n = get("N");
-    const parts = n.split(";");
-    const lastName = parts[0] || "";
-    const firstName = parts[1] || "";
-    const phone =
-      lines
-        .find((l) => l.toUpperCase().startsWith("TEL"))
-        ?.replace(/^[^:]+:/, "")
-        .trim() || "";
-    const email =
-      lines
-        .find((l) => l.toUpperCase().startsWith("EMAIL"))
-        ?.replace(/^[^:]+:/, "")
-        .trim() || "";
+    const rawLines = block.split(/\r?\n/).filter((l) => l.trim());
+    const lines = unfoldLines(rawLines);
+
+    const fn = getFieldValue(lines, "FN");
+    const nRaw = getFieldValue(lines, "N");
+    const parts = nRaw.split(";");
+    const lastName = parts[0]?.trim() || "";
+    const firstName = parts[1]?.trim() || "";
+
+    const phones = getAllFieldValues(lines, "TEL");
+    const email = getFieldValue(lines, "EMAIL");
+    const org = getFieldValue(lines, "ORG");
+    const title = getFieldValue(lines, "TITLE");
+    const note = getFieldValue(lines, "NOTE");
+
+    const displayName =
+      fn ||
+      `${firstName} ${lastName}`.trim() ||
+      org ||
+      phones[0] ||
+      `Контакт ${i + 1}`;
+
     return {
       id: `contact-${i}`,
-      fn: fn || `${firstName} ${lastName}`.trim() || `Контакт ${i + 1}`,
+      fn: displayName,
       firstName,
       lastName,
-      phone,
+      phones: phones.length > 0 ? phones : [""],
       email,
-      org: get("ORG"),
-      title: get("TITLE"),
-      note: get("NOTE"),
-      raw: lines,
+      org,
+      title,
+      note,
+      raw: rawLines,
     };
   });
 }
@@ -84,7 +138,7 @@ function contactsToVcf(contacts: VcfContact[]): string {
         "VERSION:3.0",
         `FN:${fn}`,
         `N:${c.lastName};${c.firstName};;;`,
-        c.phone ? `TEL:${c.phone}` : "",
+        ...c.phones.filter(Boolean).map((p) => `TEL;CELL:${p}`),
         c.email ? `EMAIL:${c.email}` : "",
         c.org ? `ORG:${c.org}` : "",
         c.title ? `TITLE:${c.title}` : "",
@@ -97,11 +151,10 @@ function contactsToVcf(contacts: VcfContact[]): string {
     .join("\r\n");
 }
 
-const fields = [
+const singleFields = [
   { key: "fn", label: "Отображаемое имя", icon: "User" },
   { key: "firstName", label: "Имя", icon: "UserCheck" },
   { key: "lastName", label: "Фамилия", icon: "UserCheck" },
-  { key: "phone", label: "Телефон", icon: "Phone" },
   { key: "email", label: "Email", icon: "Mail" },
   { key: "org", label: "Организация", icon: "Building2" },
   { key: "title", label: "Должность", icon: "Briefcase" },
@@ -202,7 +255,7 @@ export default function VcfEditor() {
     }
   };
 
-  const handleFieldChange = (key: string, value: string) => {
+  const handleFieldChange = (key: string, value: string | string[]) => {
     setEditedContact((prev) => (prev ? { ...prev, [key]: value } : prev));
     setIsDirty(true);
   };
@@ -312,9 +365,9 @@ export default function VcfEditor() {
                             </div>
                             <div className="min-w-0">
                               <p className="text-sm font-medium truncate">{contact.fn}</p>
-                              {contact.phone && (
+                              {contact.phones[0] && (
                                 <p className={`text-xs truncate ${selectedId === contact.id ? "text-primary-foreground/70" : "text-muted-foreground"}`}>
-                                  {contact.phone}
+                                  {contact.phones[0]}{contact.phones.filter(Boolean).length > 1 ? ` +${contact.phones.filter(Boolean).length - 1}` : ""}
                                 </p>
                               )}
                             </div>
@@ -363,7 +416,57 @@ export default function VcfEditor() {
 
                     <ScrollArea className="flex-1">
                       <div className="p-6 grid grid-cols-1 sm:grid-cols-2 gap-5">
-                        {fields.map((field) => (
+                        {/* Phones block */}
+                        <div className="space-y-2 sm:col-span-2">
+                          <Label className="flex items-center gap-1.5 text-sm text-muted-foreground">
+                            <Icon name="Phone" fallback="Circle" size={13} />
+                            Телефоны
+                          </Label>
+                          {editedContact.phones.map((phone, idx) => (
+                            <div key={idx} className="flex gap-2">
+                              <Input
+                                value={phone}
+                                onChange={(e) => {
+                                  const updated = [...editedContact.phones];
+                                  updated[idx] = e.target.value;
+                                  handleFieldChange("phones", updated);
+                                }}
+                                placeholder={`Телефон ${idx + 1}`}
+                                className="bg-background"
+                              />
+                              {editedContact.phones.length > 1 && (
+                                <Button
+                                  variant="ghost"
+                                  size="icon"
+                                  className="text-muted-foreground hover:text-destructive"
+                                  onClick={() => {
+                                    const updated = editedContact.phones.filter((_, i) => i !== idx);
+                                    handleFieldChange("phones", updated);
+                                  }}
+                                >
+                                  <Icon name="X" size={15} />
+                                </Button>
+                              )}
+                            </div>
+                          ))}
+                          {editedContact.phones.length < 5 && (
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              className="gap-1.5 text-muted-foreground"
+                              onClick={() => {
+                                const updated = [...editedContact.phones, ""];
+                                handleFieldChange("phones", updated);
+                              }}
+                            >
+                              <Icon name="Plus" size={13} />
+                              Добавить телефон
+                            </Button>
+                          )}
+                        </div>
+
+                        {/* Single-value fields */}
+                        {singleFields.map((field) => (
                           <div key={field.key} className="space-y-1.5">
                             <Label className="flex items-center gap-1.5 text-sm text-muted-foreground">
                               <Icon name={field.icon} fallback="Circle" size={13} />
