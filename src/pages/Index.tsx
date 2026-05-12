@@ -1,7 +1,7 @@
-import { LandingPage } from '@/components/landing'
+import VcfEditor from '@/components/vcf/VcfEditor'
 
 const Index = () => {
-  return <LandingPage />
+  return <VcfEditor />
 }
 
 export default Index
