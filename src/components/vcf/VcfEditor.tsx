@@ -25,8 +25,9 @@ import Icon from "@/components/ui/icon";
 interface VcfContact {
   id: string;
   fn: string;
-  firstName: string;
   lastName: string;
+  firstName: string;
+  middleName: string;
   phones: string[];
   email: string;
   org: string;
@@ -113,10 +114,11 @@ function parseVcf(content: string): VcfContact[] {
 
     const fn = getFieldValue(lines, "FN");
     const nRaw = getFieldValue(lines, "N");
-    // N field: LASTNAME;FIRSTNAME;ADDITIONAL;PREFIX;SUFFIX
+    // N field: LASTNAME;FIRSTNAME;MIDDLENAME;PREFIX;SUFFIX
     const parts = nRaw.split(";");
     const lastName = parts[0]?.trim() || "";
     const firstName = parts[1]?.trim() || "";
+    const middleName = parts[2]?.trim() || "";
 
     const phones = getAllFieldValues(lines, "TEL");
     const email = getFieldValue(lines, "EMAIL");
@@ -134,8 +136,9 @@ function parseVcf(content: string): VcfContact[] {
     return {
       id: `contact-${i}`,
       fn: displayName,
-      firstName,
       lastName,
+      firstName,
+      middleName,
       phones: phones.length > 0 ? phones : [""],
       email,
       org,
@@ -154,7 +157,7 @@ function contactsToVcf(contacts: VcfContact[]): string {
         "BEGIN:VCARD",
         "VERSION:3.0",
         `FN:${fn}`,
-        `N:${c.lastName};${c.firstName};;;`,
+        `N:${c.lastName};${c.firstName};${c.middleName};;`,
         ...c.phones.filter(Boolean).map((p) => `TEL;CELL:${p}`),
         c.email ? `EMAIL:${c.email}` : "",
         c.org ? `ORG:${c.org}` : "",
@@ -170,8 +173,6 @@ function contactsToVcf(contacts: VcfContact[]): string {
 
 const singleFields = [
   { key: "fn", label: "Отображаемое имя", icon: "User" },
-  { key: "firstName", label: "Имя", icon: "UserCheck" },
-  { key: "lastName", label: "Фамилия", icon: "UserCheck" },
   { key: "email", label: "Email", icon: "Mail" },
   { key: "org", label: "Организация", icon: "Building2" },
   { key: "title", label: "Должность", icon: "Briefcase" },
@@ -432,6 +433,34 @@ export default function VcfEditor() {
 
                     <ScrollArea className="flex-1">
                       <div className="p-6 grid grid-cols-1 sm:grid-cols-2 gap-5">
+                        {/* ФИО — три поля в одну строку */}
+                        <div className="sm:col-span-2 space-y-1.5">
+                          <Label className="flex items-center gap-1.5 text-sm text-muted-foreground">
+                            <Icon name="UserCheck" fallback="Circle" size={13} />
+                            ФИО
+                          </Label>
+                          <div className="grid grid-cols-3 gap-2">
+                            <Input
+                              value={editedContact.lastName}
+                              onChange={(e) => handleFieldChange("lastName", e.target.value)}
+                              placeholder="Фамилия"
+                              className="bg-background"
+                            />
+                            <Input
+                              value={editedContact.firstName}
+                              onChange={(e) => handleFieldChange("firstName", e.target.value)}
+                              placeholder="Имя"
+                              className="bg-background"
+                            />
+                            <Input
+                              value={editedContact.middleName}
+                              onChange={(e) => handleFieldChange("middleName", e.target.value)}
+                              placeholder="Отчество"
+                              className="bg-background"
+                            />
+                          </div>
+                        </div>
+
                         {/* Phones block */}
                         <div className="space-y-2 sm:col-span-2">
                           <Label className="flex items-center gap-1.5 text-sm text-muted-foreground">
