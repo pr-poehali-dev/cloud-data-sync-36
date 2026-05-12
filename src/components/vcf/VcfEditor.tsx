@@ -226,6 +226,9 @@ export default function VcfEditor() {
   const [mergeInfo, setMergeInfo]         = useState<{ count: number } | null>(null);
   const [search, setSearch]               = useState("");
   const [fileName, setFileName]           = useState("contacts.vcf");
+  const [checkedIds, setCheckedIds]       = useState<Set<string>>(new Set());
+  const [mergePickDialog, setMergePickDialog] = useState(false);
+  const [mergeBaseId, setMergeBaseId]     = useState<string | null>(null);
 
   const fileInputRef    = useRef<HTMLInputElement>(null);
   const photoInputRef   = useRef<HTMLInputElement>(null);
@@ -379,6 +382,47 @@ export default function VcfEditor() {
     setMergeInfo({ count: mergedCount });
   };
 
+  // ── merge selected ──
+  const handleMergeSelected = () => {
+    if (checkedIds.size < 2) return;
+    setMergeBaseId([...checkedIds][0]);
+    setMergePickDialog(true);
+  };
+
+  const handleMergeConfirm = () => {
+    if (!mergeBaseId) return;
+    const ids = [...checkedIds];
+    const base = { ...contacts.find((c) => c.id === mergeBaseId)! };
+    const others = contacts.filter((c) => ids.includes(c.id) && c.id !== mergeBaseId);
+
+    others.forEach((c) => {
+      const allPhones = [...base.phones, ...c.phones].filter(Boolean);
+      base.phones = [...new Set(allPhones)];
+      const allEmails = [...base.emails, ...c.emails].filter(Boolean);
+      base.emails = [...new Set(allEmails)];
+      if (!base.org && c.org) base.org = c.org;
+      if (!base.title && c.title) base.title = c.title;
+      if (!base.note && c.note) base.note = c.note;
+      if (!base.photo && c.photo) { base.photo = c.photo; base.photoType = c.photoType; }
+      if (!base.birthday && c.birthday) base.birthday = c.birthday;
+      if (!base.address && c.address) base.address = c.address;
+      if (!base.url && c.url) base.url = c.url;
+    });
+
+    const result = contacts
+      .filter((c) => !ids.includes(c.id) || c.id === mergeBaseId)
+      .map((c) => c.id === mergeBaseId ? base : c);
+
+    result.sort((a, b) => a.fn.localeCompare(b.fn, "ru", { sensitivity: "base" }));
+    setContacts(result);
+    setCheckedIds(new Set());
+    setMergePickDialog(false);
+    setMergeBaseId(null);
+    if (selectedId && ids.includes(selectedId) && selectedId !== mergeBaseId) {
+      setSelectedId(null); setEditedContact(null); setIsDirty(false);
+    }
+  };
+
   // ── photo upload ──
   const handlePhotoUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -482,9 +526,20 @@ export default function VcfEditor() {
                     </button>
                   )}
                 </div>
-                <p className="text-xs text-muted-foreground px-0.5">
-                  {filtered.length} из {contacts.length}
-                </p>
+                <div className="flex items-center justify-between">
+                  <p className="text-xs text-muted-foreground">{filtered.length} из {contacts.length}</p>
+                  {checkedIds.size > 0 && (
+                    <button onClick={() => setCheckedIds(new Set())} className="text-xs text-muted-foreground hover:text-foreground">
+                      Снять выделение
+                    </button>
+                  )}
+                </div>
+                {checkedIds.size >= 2 && (
+                  <Button size="sm" className="w-full gap-1.5" onClick={handleMergeSelected}>
+                    <Icon name="Merge" size={14} />
+                    Объединить выбранные ({checkedIds.size})
+                  </Button>
+                )}
               </div>
 
               <ScrollArea className="flex-1 min-h-0">
@@ -493,31 +548,51 @@ export default function VcfEditor() {
                     {filtered.map((contact, i) => (
                       <ContextMenu key={contact.id}>
                         <ContextMenuTrigger asChild>
-                          <motion.button
+                          <motion.div
                             initial={{ opacity: 0, x: -10 }} animate={{ opacity: 1, x: 0 }} transition={{ delay: i * 0.02 }}
-                            onClick={() => trySelectContact(contact.id)}
-                            className={`w-full text-left px-3 py-2 rounded-lg mb-0.5 flex items-center gap-3 transition-all ${
+                            className={`w-full px-2 py-1.5 rounded-lg mb-0.5 flex items-center gap-2 transition-all ${
                               selectedId === contact.id ? "bg-primary text-primary-foreground" : "hover:bg-muted text-foreground"
                             }`}
                           >
-                            {/* Avatar */}
-                            <div className={`w-8 h-8 rounded-full flex-shrink-0 overflow-hidden flex items-center justify-center text-sm font-semibold ${
-                              selectedId === contact.id ? "bg-primary-foreground/20 text-primary-foreground" : "bg-muted text-muted-foreground"
-                            }`}>
-                              {contact.photo
-                                ? <img src={contact.photo} alt="" className="w-full h-full object-cover" />
-                                : contact.fn.charAt(0).toUpperCase() || "?"
-                              }
-                            </div>
-                            <div className="min-w-0">
-                              <p className="text-sm font-medium truncate">{contact.fn}</p>
-                              {contact.phones[0] && (
-                                <p className={`text-xs truncate ${selectedId === contact.id ? "text-primary-foreground/70" : "text-muted-foreground"}`}>
-                                  {contact.phones[0]}{contact.phones.filter(Boolean).length > 1 ? ` +${contact.phones.filter(Boolean).length - 1}` : ""}
-                                </p>
-                              )}
-                            </div>
-                          </motion.button>
+                            {/* Checkbox */}
+                            <input
+                              type="checkbox"
+                              checked={checkedIds.has(contact.id)}
+                              onChange={(e) => {
+                                e.stopPropagation();
+                                setCheckedIds((prev) => {
+                                  const next = new Set(prev);
+                                  if (e.target.checked) next.add(contact.id);
+                                  else next.delete(contact.id);
+                                  return next;
+                                });
+                              }}
+                              onClick={(e) => e.stopPropagation()}
+                              className="flex-shrink-0 w-3.5 h-3.5 accent-primary cursor-pointer"
+                            />
+                            {/* Clickable contact row */}
+                            <button
+                              onClick={() => trySelectContact(contact.id)}
+                              className="flex items-center gap-2 min-w-0 flex-1 text-left"
+                            >
+                              <div className={`w-7 h-7 rounded-full flex-shrink-0 overflow-hidden flex items-center justify-center text-xs font-semibold ${
+                                selectedId === contact.id ? "bg-primary-foreground/20 text-primary-foreground" : "bg-muted text-muted-foreground"
+                              }`}>
+                                {contact.photo
+                                  ? <img src={contact.photo} alt="" className="w-full h-full object-cover" />
+                                  : contact.fn.charAt(0).toUpperCase() || "?"
+                                }
+                              </div>
+                              <div className="min-w-0">
+                                <p className="text-sm font-medium truncate">{contact.fn}</p>
+                                {contact.phones[0] && (
+                                  <p className={`text-xs truncate ${selectedId === contact.id ? "text-primary-foreground/70" : "text-muted-foreground"}`}>
+                                    {contact.phones[0]}{contact.phones.filter(Boolean).length > 1 ? ` +${contact.phones.filter(Boolean).length - 1}` : ""}
+                                  </p>
+                                )}
+                              </div>
+                            </button>
+                          </motion.div>
                         </ContextMenuTrigger>
                         <ContextMenuContent>
                           <ContextMenuItem className="text-destructive focus:text-destructive gap-2" onClick={() => handleDelete(contact.id)}>
@@ -788,6 +863,50 @@ export default function VcfEditor() {
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogAction onClick={() => setMergeInfo(null)}>Отлично</AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* ── Merge pick base dialog ── */}
+      <AlertDialog open={mergePickDialog} onOpenChange={(o) => { if (!o) { setMergePickDialog(false); setMergeBaseId(null); } }}>
+        <AlertDialogContent className="max-w-sm">
+          <AlertDialogHeader>
+            <AlertDialogTitle>Какой контакт оставить?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Данные из остальных {checkedIds.size - 1} контактов (телефоны, email и др.) будут добавлены в выбранный. Остальные удалятся.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <div className="py-2 space-y-1 max-h-60 overflow-y-auto">
+            {[...checkedIds].map((id) => {
+              const c = contacts.find((x) => x.id === id);
+              if (!c) return null;
+              return (
+                <button
+                  key={id}
+                  onClick={() => setMergeBaseId(id)}
+                  className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg border transition-all text-left ${
+                    mergeBaseId === id
+                      ? "border-primary bg-primary/5"
+                      : "border-border hover:bg-muted"
+                  }`}
+                >
+                  <div className="w-8 h-8 rounded-full bg-muted overflow-hidden flex items-center justify-center text-sm font-semibold flex-shrink-0">
+                    {c.photo ? <img src={c.photo} alt="" className="w-full h-full object-cover" /> : c.fn.charAt(0).toUpperCase()}
+                  </div>
+                  <div className="min-w-0">
+                    <p className="text-sm font-medium truncate">{c.fn}</p>
+                    <p className="text-xs text-muted-foreground truncate">{c.phones.filter(Boolean).join(", ")}</p>
+                  </div>
+                  {mergeBaseId === id && <Icon name="Check" size={16} className="text-primary ml-auto flex-shrink-0" />}
+                </button>
+              );
+            })}
+          </div>
+          <AlertDialogFooter>
+            <AlertDialogCancel onClick={() => { setMergePickDialog(false); setMergeBaseId(null); }}>Отмена</AlertDialogCancel>
+            <AlertDialogAction onClick={handleMergeConfirm} disabled={!mergeBaseId}>
+              Объединить
+            </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
