@@ -663,6 +663,34 @@ export default function VcfEditor() {
                             <Icon name="User" fallback="Circle" size={13} />Отображаемое имя
                           </Label>
                           <Input value={editedContact.fn} onChange={(e) => handleFieldChange("fn", e.target.value)} placeholder="Отображаемое имя" className="bg-background" />
+                          {/* Варианты из ФИО */}
+                          {(editedContact.lastName || editedContact.firstName || editedContact.middleName) && (() => {
+                            const { lastName: l, firstName: f, middleName: m } = editedContact;
+                            const variants = [
+                              [l, f, m].filter(Boolean).join(" "),
+                              [f, m, l].filter(Boolean).join(" "),
+                              [f, l].filter(Boolean).join(" "),
+                              [l, f].filter(Boolean).join(" "),
+                            ].filter((v, i, arr) => v && arr.indexOf(v) === i);
+                            return (
+                              <div className="flex flex-wrap gap-1.5 pt-0.5">
+                                {variants.map((v) => (
+                                  <button
+                                    key={v}
+                                    type="button"
+                                    onClick={() => handleFieldChange("fn", v)}
+                                    className={`text-xs px-2 py-0.5 rounded-full border transition-all ${
+                                      editedContact.fn === v
+                                        ? "bg-primary text-primary-foreground border-primary"
+                                        : "bg-muted text-muted-foreground border-border hover:border-primary hover:text-foreground"
+                                    }`}
+                                  >
+                                    {v}
+                                  </button>
+                                ))}
+                              </div>
+                            );
+                          })()}
                         </div>
 
                         {/* Телефоны */}
