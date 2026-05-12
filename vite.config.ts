@@ -3,10 +3,7 @@ import react from "@vitejs/plugin-react-swc";
 import path from "path";
 import {componentTagger} from "pp-tagger";
 
-// DDoS Guard требует двусторонний app-level keepalive чаще 30s.
-// Сервер: text-frame {type:'ping'} каждые 5-9s (рандом — чтобы DDoS Guard
-// не триггерился на одинаковые интервалы; Vite-клиент игнорирует, case "ping": break;).
-// Клиент: server.hmr.timeout = 7000 ниже понижает pingInterval @vite/client до 7s.
+// https://vitejs.dev/config/
 const hmrKeepalive = {
     name: 'hmr-ws-keepalive',
     configureServer(server: any) {
@@ -22,11 +19,10 @@ const hmrKeepalive = {
     },
 };
 
-// https://vitejs.dev/config/
 export default defineConfig(({mode}) => ({
     plugins: [
-        react(),
         hmrKeepalive,
+        react(),
         mode === 'development' &&
         componentTagger(),
     ].filter(Boolean),
@@ -40,8 +36,8 @@ export default defineConfig(({mode}) => ({
         port: 5173,
         allowedHosts: true,
         hmr: {
-            overlay: false, // Disables the error overlay if you only want console errors
-            timeout: 7000, // pingInterval @vite/client — нужен <30s для DDoS Guard
+            timeout: 7000,
+            overlay: false // Disables the error overlay if you only want console errors
         }
     },
 }));
