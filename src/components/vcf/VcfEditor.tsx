@@ -38,29 +38,41 @@ interface VcfContact {
 // Decode Quoted-Printable encoded string (UTF-8 bytes)
 function decodeQP(str: string): string {
   try {
-    const cleaned = str.replace(/=\r?\n/g, ""); // soft line breaks
-    const bytes = cleaned.replace(/=([0-9A-Fa-f]{2})/g, (_, hex) =>
+    // Remove QP soft line breaks FIRST (= at end of line, before \r\n or \n)
+    const joined = str.replace(/=\r?\n/g, "");
+    // Then decode =XX sequences as raw bytes, then interpret as UTF-8
+    const bytes = joined.replace(/=([0-9A-Fa-f]{2})/g, (_, hex) =>
       String.fromCharCode(parseInt(hex, 16))
     );
+    // Use TextDecoder-compatible approach via escape/decodeURIComponent
     return decodeURIComponent(escape(bytes));
   } catch {
     return str;
   }
 }
 
-// Unfold and join multi-line values, then decode if needed
-function unfoldLines(lines: string[]): string[] {
+// Unfold vCard lines:
+// 1. VCF folding: continuation lines start with SPACE or TAB
+// 2. QP soft line breaks: line ends with = (the = is part of value, not a separator)
+function unfoldLines(raw: string[]): string[] {
   const result: string[] = [];
-  for (let i = 0; i < lines.length; i++) {
-    let line = lines[i];
-    // VCF soft line wrapping: continuation lines start with space or tab
-    while (i + 1 < lines.length && /^[ \t]/.test(lines[i + 1])) {
+  for (let i = 0; i < raw.length; i++) {
+    let line = raw[i];
+    // VCF standard folding (RFC 6350): next line starts with space/tab
+    while (i + 1 < raw.length && /^[ \t]/.test(raw[i + 1])) {
       i++;
-      line += lines[i].replace(/^[ \t]/, "");
+      line += raw[i].replace(/^[ \t]/, "");
     }
     result.push(line);
   }
   return result;
+}
+
+// Pre-process: join QP soft-broken lines BEFORE splitting into logical lines
+// QP soft break: line ends with = (no trailing space), next line is continuation
+function joinQPSoftBreaks(content: string): string {
+  // Replace =\r\n or =\n (QP soft line break) with nothing — joins the lines
+  return content.replace(/=\r?\n/g, "");
 }
 
 function getFieldValue(lines: string[], keyPrefix: string): string {
@@ -70,9 +82,9 @@ function getFieldValue(lines: string[], keyPrefix: string): string {
   const colonIdx = line.indexOf(":");
   if (colonIdx === -1) return "";
   const params = line.slice(0, colonIdx).toUpperCase();
-  const value = line.slice(colonIdx + 1).trim();
+  const value = line.slice(colonIdx + 1);
   if (params.includes("QUOTED-PRINTABLE")) return decodeQP(value);
-  return value;
+  return value.trim();
 }
 
 function getAllFieldValues(lines: string[], keyPrefix: string): string[] {
@@ -83,20 +95,25 @@ function getAllFieldValues(lines: string[], keyPrefix: string): string[] {
       const colonIdx = line.indexOf(":");
       if (colonIdx === -1) return "";
       const params = line.slice(0, colonIdx).toUpperCase();
-      const value = line.slice(colonIdx + 1).trim();
-      return params.includes("QUOTED-PRINTABLE") ? decodeQP(value) : value;
+      const value = line.slice(colonIdx + 1);
+      return params.includes("QUOTED-PRINTABLE") ? decodeQP(value) : value.trim();
     })
     .filter(Boolean);
 }
 
 function parseVcf(content: string): VcfContact[] {
-  const blocks = content.split(/END:VCARD/i).filter((b) => b.trim());
+  // Step 1: join QP soft-broken lines at the raw content level
+  const preprocessed = joinQPSoftBreaks(content);
+  const blocks = preprocessed.split(/END:VCARD/i).filter((b) => b.trim());
+
   return blocks.map((block, i) => {
     const rawLines = block.split(/\r?\n/).filter((l) => l.trim());
+    // Step 2: unfold VCF standard folded lines (space/tab continuation)
     const lines = unfoldLines(rawLines);
 
     const fn = getFieldValue(lines, "FN");
     const nRaw = getFieldValue(lines, "N");
+    // N field: LASTNAME;FIRSTNAME;ADDITIONAL;PREFIX;SUFFIX
     const parts = nRaw.split(";");
     const lastName = parts[0]?.trim() || "";
     const firstName = parts[1]?.trim() || "";
@@ -273,7 +290,7 @@ export default function VcfEditor() {
   };
 
   return (
-    <div className="min-h-screen bg-background flex flex-col">
+    <div className="h-screen bg-background flex flex-col overflow-hidden">
       {/* Header */}
       <motion.header
         initial={{ y: -20, opacity: 0 }}
@@ -336,7 +353,7 @@ export default function VcfEditor() {
               initial={{ x: -20, opacity: 0 }}
               animate={{ x: 0, opacity: 1 }}
               transition={{ duration: 0.4, delay: 0.1 }}
-              className="w-72 border-r border-border bg-card flex flex-col"
+              className="w-72 border-r border-border bg-card flex flex-col min-h-0"
             >
               <div className="px-4 py-3 border-b border-border">
                 <p className="text-sm font-medium text-muted-foreground uppercase tracking-wide">Контакты</p>
@@ -390,16 +407,16 @@ export default function VcfEditor() {
             </motion.aside>
 
             {/* Right panel — editor */}
-            <div className="flex-1 flex flex-col overflow-hidden">
+            <div className="flex-1 flex flex-col overflow-hidden min-h-0">
               <AnimatePresence mode="wait">
                 {editedContact ? (
                   <motion.div
                     key={editedContact.id}
-                    initial={{ opacity: 0, y: 10 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    exit={{ opacity: 0, y: -10 }}
-                    transition={{ duration: 0.25 }}
-                    className="flex-1 flex flex-col overflow-hidden"
+                    initial={{ opacity: 0 }}
+                    animate={{ opacity: 1 }}
+                    exit={{ opacity: 0 }}
+                    transition={{ duration: 0.15 }}
+                    className="flex-1 flex flex-col overflow-hidden min-h-0"
                   >
                     <div className="px-6 py-4 border-b border-border flex items-center gap-3">
                       <div className="w-10 h-10 rounded-full bg-primary flex items-center justify-center text-primary-foreground font-semibold">
