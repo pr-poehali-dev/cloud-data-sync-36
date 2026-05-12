@@ -14,6 +14,12 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
+import {
+  ContextMenu,
+  ContextMenuContent,
+  ContextMenuItem,
+  ContextMenuTrigger,
+} from "@/components/ui/context-menu";
 import Icon from "@/components/ui/icon";
 
 interface VcfContact {
@@ -109,6 +115,7 @@ export default function VcfEditor() {
   const [isDirty, setIsDirty] = useState(false);
   const [pendingId, setPendingId] = useState<string | null>(null);
   const [showDialog, setShowDialog] = useState(false);
+  const [deleteId, setDeleteId] = useState<string | null>(null);
   const [fileName, setFileName] = useState("contacts.vcf");
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -200,6 +207,18 @@ export default function VcfEditor() {
     setIsDirty(true);
   };
 
+  const handleDeleteConfirm = () => {
+    if (!deleteId) return;
+    const remaining = contacts.filter((c) => c.id !== deleteId);
+    setContacts(remaining);
+    if (selectedId === deleteId) {
+      setSelectedId(null);
+      setEditedContact(null);
+      setIsDirty(false);
+    }
+    setDeleteId(null);
+  };
+
   return (
     <div className="min-h-screen bg-background flex flex-col">
       {/* Header */}
@@ -273,32 +292,44 @@ export default function VcfEditor() {
                 <div className="p-2">
                   <AnimatePresence>
                     {contacts.map((contact, i) => (
-                      <motion.button
-                        key={contact.id}
-                        initial={{ opacity: 0, x: -10 }}
-                        animate={{ opacity: 1, x: 0 }}
-                        transition={{ delay: i * 0.03 }}
-                        onClick={() => trySelectContact(contact.id)}
-                        className={`w-full text-left px-3 py-2.5 rounded-lg mb-1 flex items-center gap-3 transition-all ${
-                          selectedId === contact.id
-                            ? "bg-primary text-primary-foreground"
-                            : "hover:bg-muted text-foreground"
-                        }`}
-                      >
-                        <div className={`w-8 h-8 rounded-full flex items-center justify-center text-sm font-semibold flex-shrink-0 ${
-                          selectedId === contact.id ? "bg-primary-foreground/20 text-primary-foreground" : "bg-muted text-muted-foreground"
-                        }`}>
-                          {contact.fn.charAt(0).toUpperCase() || "?"}
-                        </div>
-                        <div className="min-w-0">
-                          <p className="text-sm font-medium truncate">{contact.fn}</p>
-                          {contact.phone && (
-                            <p className={`text-xs truncate ${selectedId === contact.id ? "text-primary-foreground/70" : "text-muted-foreground"}`}>
-                              {contact.phone}
-                            </p>
-                          )}
-                        </div>
-                      </motion.button>
+                      <ContextMenu key={contact.id}>
+                        <ContextMenuTrigger asChild>
+                          <motion.button
+                            initial={{ opacity: 0, x: -10 }}
+                            animate={{ opacity: 1, x: 0 }}
+                            transition={{ delay: i * 0.03 }}
+                            onClick={() => trySelectContact(contact.id)}
+                            className={`w-full text-left px-3 py-2.5 rounded-lg mb-1 flex items-center gap-3 transition-all ${
+                              selectedId === contact.id
+                                ? "bg-primary text-primary-foreground"
+                                : "hover:bg-muted text-foreground"
+                            }`}
+                          >
+                            <div className={`w-8 h-8 rounded-full flex items-center justify-center text-sm font-semibold flex-shrink-0 ${
+                              selectedId === contact.id ? "bg-primary-foreground/20 text-primary-foreground" : "bg-muted text-muted-foreground"
+                            }`}>
+                              {contact.fn.charAt(0).toUpperCase() || "?"}
+                            </div>
+                            <div className="min-w-0">
+                              <p className="text-sm font-medium truncate">{contact.fn}</p>
+                              {contact.phone && (
+                                <p className={`text-xs truncate ${selectedId === contact.id ? "text-primary-foreground/70" : "text-muted-foreground"}`}>
+                                  {contact.phone}
+                                </p>
+                              )}
+                            </div>
+                          </motion.button>
+                        </ContextMenuTrigger>
+                        <ContextMenuContent>
+                          <ContextMenuItem
+                            className="text-destructive focus:text-destructive gap-2"
+                            onClick={() => setDeleteId(contact.id)}
+                          >
+                            <Icon name="Trash2" size={14} />
+                            Удалить контакт
+                          </ContextMenuItem>
+                        </ContextMenuContent>
+                      </ContextMenu>
                     ))}
                   </AnimatePresence>
                 </div>
@@ -363,6 +394,14 @@ export default function VcfEditor() {
                         <Icon name="RotateCcw" size={15} />
                         Отменить
                       </Button>
+                      <Button
+                        variant="destructive"
+                        onClick={() => editedContact && setDeleteId(editedContact.id)}
+                        className="gap-2 ml-auto"
+                      >
+                        <Icon name="Trash2" size={15} />
+                        Удалить контакт
+                      </Button>
                     </motion.div>
                   </motion.div>
                 ) : (
@@ -381,6 +420,27 @@ export default function VcfEditor() {
           </>
         )}
       </div>
+
+      {/* Delete dialog */}
+      <AlertDialog open={!!deleteId} onOpenChange={(open) => !open && setDeleteId(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Удалить контакт?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Контакт «{contacts.find((c) => c.id === deleteId)?.fn}» будет удалён безвозвратно.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Отмена</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={handleDeleteConfirm}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            >
+              Удалить
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       {/* Save dialog */}
       <AlertDialog open={showDialog} onOpenChange={setShowDialog}>
