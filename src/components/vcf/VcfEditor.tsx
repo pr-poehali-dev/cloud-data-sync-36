@@ -4,6 +4,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { Badge } from "@/components/ui/badge";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -22,6 +23,8 @@ import {
 } from "@/components/ui/context-menu";
 import Icon from "@/components/ui/icon";
 
+// ─── Types ───────────────────────────────────────────────────────────────────
+
 interface VcfContact {
   id: string;
   fn: string;
@@ -29,37 +32,41 @@ interface VcfContact {
   firstName: string;
   middleName: string;
   phones: string[];
-  email: string;
+  emails: string[];
   org: string;
   title: string;
   note: string;
+  photo: string;      // base64 data-URI or ""
+  photoType: string;  // JPEG / PNG / etc.
+  birthday: string;
+  address: string;
+  url: string;
+  extraFields: { key: string; value: string }[];
   raw: string[];
 }
 
-// Decode Quoted-Printable encoded string (UTF-8 bytes)
+// ─── Parsing helpers ──────────────────────────────────────────────────────────
+
 function decodeQP(str: string): string {
   try {
-    // Remove QP soft line breaks FIRST (= at end of line, before \r\n or \n)
     const joined = str.replace(/=\r?\n/g, "");
-    // Then decode =XX sequences as raw bytes, then interpret as UTF-8
     const bytes = joined.replace(/=([0-9A-Fa-f]{2})/g, (_, hex) =>
       String.fromCharCode(parseInt(hex, 16))
     );
-    // Use TextDecoder-compatible approach via escape/decodeURIComponent
     return decodeURIComponent(escape(bytes));
   } catch {
     return str;
   }
 }
 
-// Unfold vCard lines:
-// 1. VCF folding: continuation lines start with SPACE or TAB
-// 2. QP soft line breaks: line ends with = (the = is part of value, not a separator)
+function joinQPSoftBreaks(content: string): string {
+  return content.replace(/=\r?\n/g, "");
+}
+
 function unfoldLines(raw: string[]): string[] {
   const result: string[] = [];
   for (let i = 0; i < raw.length; i++) {
     let line = raw[i];
-    // VCF standard folding (RFC 6350): next line starts with space/tab
     while (i + 1 < raw.length && /^[ \t]/.test(raw[i + 1])) {
       i++;
       line += raw[i].replace(/^[ \t]/, "");
@@ -69,17 +76,7 @@ function unfoldLines(raw: string[]): string[] {
   return result;
 }
 
-// Pre-process: join QP soft-broken lines BEFORE splitting into logical lines
-// QP soft break: line ends with = (no trailing space), next line is continuation
-function joinQPSoftBreaks(content: string): string {
-  // Replace =\r\n or =\n (QP soft line break) with nothing — joins the lines
-  return content.replace(/=\r?\n/g, "");
-}
-
-function getFieldValue(lines: string[], keyPrefix: string): string {
-  const upper = keyPrefix.toUpperCase();
-  const line = lines.find((l) => l.toUpperCase().startsWith(upper));
-  if (!line) return "";
+function getLineValue(line: string): string {
   const colonIdx = line.indexOf(":");
   if (colonIdx === -1) return "";
   const params = line.slice(0, colonIdx).toUpperCase();
@@ -88,47 +85,87 @@ function getFieldValue(lines: string[], keyPrefix: string): string {
   return value.trim();
 }
 
+function getFieldValue(lines: string[], keyPrefix: string): string {
+  const upper = keyPrefix.toUpperCase();
+  const line = lines.find((l) => l.toUpperCase().startsWith(upper));
+  return line ? getLineValue(line) : "";
+}
+
 function getAllFieldValues(lines: string[], keyPrefix: string): string[] {
   const upper = keyPrefix.toUpperCase();
   return lines
     .filter((l) => l.toUpperCase().startsWith(upper))
-    .map((line) => {
-      const colonIdx = line.indexOf(":");
-      if (colonIdx === -1) return "";
-      const params = line.slice(0, colonIdx).toUpperCase();
-      const value = line.slice(colonIdx + 1);
-      return params.includes("QUOTED-PRINTABLE") ? decodeQP(value) : value.trim();
-    })
+    .map(getLineValue)
     .filter(Boolean);
 }
 
+// Known top-level keys we handle explicitly
+const KNOWN_KEYS = new Set([
+  "BEGIN", "END", "VERSION", "FN", "N", "TEL", "EMAIL",
+  "ORG", "TITLE", "NOTE", "PHOTO", "BDAY", "ADR", "URL",
+]);
+
+function isKnownKey(line: string): boolean {
+  const key = line.split(/[;:]/)[0].toUpperCase();
+  return KNOWN_KEYS.has(key);
+}
+
 function parseVcf(content: string): VcfContact[] {
-  // Step 1: join QP soft-broken lines at the raw content level
   const preprocessed = joinQPSoftBreaks(content);
   const blocks = preprocessed.split(/END:VCARD/i).filter((b) => b.trim());
 
   return blocks.map((block, i) => {
     const rawLines = block.split(/\r?\n/).filter((l) => l.trim());
-    // Step 2: unfold VCF standard folded lines (space/tab continuation)
     const lines = unfoldLines(rawLines);
 
     const fn = getFieldValue(lines, "FN");
     const nRaw = getFieldValue(lines, "N");
-    // N field: LASTNAME;FIRSTNAME;MIDDLENAME;PREFIX;SUFFIX
     const parts = nRaw.split(";");
-    const lastName = parts[0]?.trim() || "";
-    const firstName = parts[1]?.trim() || "";
+    const lastName   = parts[0]?.trim() || "";
+    const firstName  = parts[1]?.trim() || "";
     const middleName = parts[2]?.trim() || "";
 
-    const phones = getAllFieldValues(lines, "TEL");
-    const email = getFieldValue(lines, "EMAIL");
-    const org = getFieldValue(lines, "ORG");
-    const title = getFieldValue(lines, "TITLE");
-    const note = getFieldValue(lines, "NOTE");
+    const phones  = getAllFieldValues(lines, "TEL");
+    const emails  = getAllFieldValues(lines, "EMAIL");
+    const org     = getFieldValue(lines, "ORG");
+    const title   = getFieldValue(lines, "TITLE");
+    const note    = getFieldValue(lines, "NOTE");
+    const birthday = getFieldValue(lines, "BDAY");
+    const url     = getFieldValue(lines, "URL");
+
+    // ADR: ;TYPE=HOME:;;Street;City;State;ZIP;Country
+    const adrRaw = getFieldValue(lines, "ADR");
+    const adrParts = adrRaw.split(";");
+    const address = adrParts.slice(2).filter(Boolean).join(", ");
+
+    // PHOTO — may be inline base64 or URL
+    const photoLine = lines.find((l) => l.toUpperCase().startsWith("PHOTO"));
+    let photo = "";
+    let photoType = "JPEG";
+    if (photoLine) {
+      const colonIdx = photoLine.indexOf(":");
+      const params = photoLine.slice(0, colonIdx).toUpperCase();
+      const value  = photoLine.slice(colonIdx + 1).trim();
+      if (params.includes("BASE64") || params.includes("ENCODING=B") || params.includes("ENCODING=BASE64")) {
+        const typeMatch = params.match(/TYPE=([A-Z]+)/);
+        photoType = typeMatch ? typeMatch[1] : "JPEG";
+        photo = `data:image/${photoType.toLowerCase()};base64,${value}`;
+      } else if (value.startsWith("data:")) {
+        photo = value;
+      } else if (value.startsWith("http")) {
+        photo = value;
+      }
+    }
+
+    // Extra unknown fields
+    const extraFields = lines
+      .filter((l) => !isKnownKey(l) && !l.toUpperCase().startsWith("BEGIN") && !l.toUpperCase().startsWith("VERSION"))
+      .map((l) => ({ key: l.split(/[;:]/)[0], value: getLineValue(l) }))
+      .filter((f) => f.key && f.value);
 
     const displayName =
       fn ||
-      `${firstName} ${lastName}`.trim() ||
+      `${lastName} ${firstName} ${middleName}`.trim() ||
       org ||
       phones[0] ||
       `Контакт ${i + 1}`;
@@ -136,62 +173,76 @@ function parseVcf(content: string): VcfContact[] {
     return {
       id: `contact-${i}`,
       fn: displayName,
-      lastName,
-      firstName,
-      middleName,
+      lastName, firstName, middleName,
       phones: phones.length > 0 ? phones : [""],
-      email,
-      org,
-      title,
-      note,
+      emails,
+      org, title, note, photo, photoType,
+      birthday, address, url,
+      extraFields,
       raw: rawLines,
     };
   });
 }
 
 function contactsToVcf(contacts: VcfContact[]): string {
-  return contacts
-    .map((c) => {
-      const fn = c.fn || `${c.firstName} ${c.lastName}`.trim();
-      return [
-        "BEGIN:VCARD",
-        "VERSION:3.0",
-        `FN:${fn}`,
-        `N:${c.lastName};${c.firstName};${c.middleName};;`,
-        ...c.phones.filter(Boolean).map((p) => `TEL;CELL:${p}`),
-        c.email ? `EMAIL:${c.email}` : "",
-        c.org ? `ORG:${c.org}` : "",
-        c.title ? `TITLE:${c.title}` : "",
-        c.note ? `NOTE:${c.note}` : "",
-        "END:VCARD",
-      ]
-        .filter(Boolean)
-        .join("\r\n");
-    })
-    .join("\r\n");
+  return contacts.map((c) => {
+    const fn = c.fn || `${c.lastName} ${c.firstName} ${c.middleName}`.trim();
+    const lines = [
+      "BEGIN:VCARD",
+      "VERSION:3.0",
+      `FN:${fn}`,
+      `N:${c.lastName};${c.firstName};${c.middleName};;`,
+      ...c.phones.filter(Boolean).map((p) => `TEL;CELL:${p}`),
+      ...c.emails.filter(Boolean).map((e) => `EMAIL:${e}`),
+      c.org      ? `ORG:${c.org}`         : "",
+      c.title    ? `TITLE:${c.title}`     : "",
+      c.note     ? `NOTE:${c.note}`       : "",
+      c.birthday ? `BDAY:${c.birthday}`   : "",
+      c.address  ? `ADR:;;${c.address};;;;` : "",
+      c.url      ? `URL:${c.url}`         : "",
+    ].filter(Boolean);
+
+    if (c.photo && c.photo.startsWith("data:")) {
+      const b64 = c.photo.split(",")[1] || "";
+      lines.push(`PHOTO;ENCODING=BASE64;TYPE=${c.photoType}:${b64}`);
+    } else if (c.photo) {
+      lines.push(`PHOTO;VALUE=URI:${c.photo}`);
+    }
+
+    lines.push("END:VCARD");
+    return lines.join("\r\n");
+  }).join("\r\n");
 }
 
-const singleFields = [
-  { key: "fn", label: "Отображаемое имя", icon: "User" },
-  { key: "email", label: "Email", icon: "Mail" },
-  { key: "org", label: "Организация", icon: "Building2" },
-  { key: "title", label: "Должность", icon: "Briefcase" },
-  { key: "note", label: "Заметка", icon: "FileText" },
-] as const;
+// ─── Component ────────────────────────────────────────────────────────────────
 
 export default function VcfEditor() {
-  const [contacts, setContacts] = useState<VcfContact[]>([]);
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [contacts, setContacts]           = useState<VcfContact[]>([]);
+  const [selectedId, setSelectedId]       = useState<string | null>(null);
   const [editedContact, setEditedContact] = useState<VcfContact | null>(null);
-  const [isDirty, setIsDirty] = useState(false);
-  const [pendingId, setPendingId] = useState<string | null>(null);
-  const [showDialog, setShowDialog] = useState(false);
+  const [isDirty, setIsDirty]             = useState(false);
+  const [pendingId, setPendingId]         = useState<string | null>(null);
+  const [showDialog, setShowDialog]       = useState(false);
+  const [mergeInfo, setMergeInfo]         = useState<{ count: number } | null>(null);
+  const [search, setSearch]               = useState("");
+  const [fileName, setFileName]           = useState("contacts.vcf");
 
-  const [fileName, setFileName] = useState("contacts.vcf");
-  const fileInputRef = useRef<HTMLInputElement>(null);
+  const fileInputRef    = useRef<HTMLInputElement>(null);
+  const photoInputRef   = useRef<HTMLInputElement>(null);
 
   const selected = contacts.find((c) => c.id === selectedId);
 
+  // ── filtered list ──
+  const filtered = contacts.filter((c) => {
+    if (!search.trim()) return true;
+    const q = search.trim().toLowerCase();
+    return (
+      c.fn.toLowerCase().includes(q) ||
+      c.phones.some((p) => p.replace(/\D/g, "").includes(q.replace(/\D/g, "")))
+    );
+  });
+
+  // ── file load ──
   const handleFileLoad = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -207,59 +258,47 @@ export default function VcfEditor() {
       setIsDirty(false);
     };
     reader.readAsText(file, "utf-8");
+    e.target.value = "";
   };
 
   const handleDownload = () => {
     const content = contactsToVcf(contacts);
     const blob = new Blob([content], { type: "text/vcard;charset=utf-8" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = fileName;
-    a.click();
+    const url  = URL.createObjectURL(blob);
+    const a    = document.createElement("a");
+    a.href = url; a.download = fileName; a.click();
     URL.revokeObjectURL(url);
   };
 
-  const trySelectContact = useCallback(
-    (id: string) => {
-      if (isDirty && selectedId !== id) {
-        setPendingId(id);
-        setShowDialog(true);
-      } else {
-        const c = contacts.find((x) => x.id === id);
-        setSelectedId(id);
-        setEditedContact(c ? { ...c } : null);
-        setIsDirty(false);
-      }
-    },
-    [isDirty, selectedId, contacts]
-  );
+  // ── select ──
+  const trySelectContact = useCallback((id: string) => {
+    if (isDirty && selectedId !== id) {
+      setPendingId(id); setShowDialog(true);
+    } else {
+      const c = contacts.find((x) => x.id === id);
+      setSelectedId(id);
+      setEditedContact(c ? { ...c } : null);
+      setIsDirty(false);
+    }
+  }, [isDirty, selectedId, contacts]);
 
+  // ── save / cancel ──
   const handleSave = () => {
     if (!editedContact) return;
-    setContacts((prev) =>
-      prev.map((c) => (c.id === editedContact.id ? { ...editedContact } : c))
-    );
-    setSelectedId(editedContact.id);
+    setContacts((prev) => prev.map((c) => c.id === editedContact.id ? { ...editedContact } : c));
     setIsDirty(false);
   };
 
   const handleCancel = () => {
-    if (selected) {
-      setEditedContact({ ...selected });
-      setIsDirty(false);
-    }
+    if (selected) { setEditedContact({ ...selected }); setIsDirty(false); }
   };
 
   const handleDialogSave = () => {
-    handleSave();
-    setShowDialog(false);
+    handleSave(); setShowDialog(false);
     if (pendingId) {
       const c = contacts.find((x) => x.id === pendingId);
-      setSelectedId(pendingId);
-      setEditedContact(c ? { ...c } : null);
-      setIsDirty(false);
-      setPendingId(null);
+      setSelectedId(pendingId); setEditedContact(c ? { ...c } : null);
+      setIsDirty(false); setPendingId(null);
     }
   };
 
@@ -267,69 +306,136 @@ export default function VcfEditor() {
     setShowDialog(false);
     if (pendingId) {
       const c = contacts.find((x) => x.id === pendingId);
-      setSelectedId(pendingId);
-      setEditedContact(c ? { ...c } : null);
-      setIsDirty(false);
-      setPendingId(null);
+      setSelectedId(pendingId); setEditedContact(c ? { ...c } : null);
+      setIsDirty(false); setPendingId(null);
     }
   };
 
+  // ── field change ──
   const handleFieldChange = (key: string, value: string | string[]) => {
-    setEditedContact((prev) => (prev ? { ...prev, [key]: value } : prev));
+    setEditedContact((prev) => prev ? { ...prev, [key]: value } : prev);
     setIsDirty(true);
   };
 
+  // ── delete ──
   const handleDelete = (id: string) => {
-    const remaining = contacts.filter((c) => c.id !== id);
-    setContacts(remaining);
-    if (selectedId === id) {
-      setSelectedId(null);
-      setEditedContact(null);
-      setIsDirty(false);
-    }
+    setContacts((prev) => prev.filter((c) => c.id !== id));
+    if (selectedId === id) { setSelectedId(null); setEditedContact(null); setIsDirty(false); }
   };
 
+  // ── remove empty (no phones) ──
+  const handleRemoveEmpty = () => {
+    setContacts((prev) => {
+      const kept = prev.filter((c) => c.phones.some((p) => p.trim()));
+      if (selectedId) {
+        const still = kept.find((c) => c.id === selectedId);
+        if (!still) { setSelectedId(null); setEditedContact(null); setIsDirty(false); }
+      }
+      return kept;
+    });
+  };
+
+  // ── merge duplicates by FIO ──
+  const handleMergeDuplicates = () => {
+    const groups = new Map<string, VcfContact[]>();
+    contacts.forEach((c) => {
+      const key = `${c.lastName}|${c.firstName}|${c.middleName}`.toLowerCase().trim();
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key)!.push(c);
+    });
+
+    let mergedCount = 0;
+    const result: VcfContact[] = [];
+
+    groups.forEach((group) => {
+      if (group.length === 1) { result.push(group[0]); return; }
+      mergedCount += group.length - 1;
+      const base = { ...group[0] };
+      group.slice(1).forEach((c) => {
+        const allPhones = [...base.phones, ...c.phones].filter(Boolean);
+        base.phones = [...new Set(allPhones)];
+        const allEmails = [...base.emails, ...c.emails].filter(Boolean);
+        base.emails = [...new Set(allEmails)];
+        if (!base.org && c.org) base.org = c.org;
+        if (!base.note && c.note) base.note = c.note;
+        if (!base.photo && c.photo) base.photo = c.photo;
+      });
+      result.push(base);
+    });
+
+    result.sort((a, b) => a.fn.localeCompare(b.fn, "ru", { sensitivity: "base" }));
+    setContacts(result);
+    setSelectedId(null); setEditedContact(null); setIsDirty(false);
+    setMergeInfo({ count: mergedCount });
+  };
+
+  // ── photo upload ──
+  const handlePhotoUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file || !editedContact) return;
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      const dataUrl = ev.target?.result as string;
+      const typeMatch = dataUrl.match(/data:image\/([^;]+)/);
+      const photoType = typeMatch ? typeMatch[1].toUpperCase() : "JPEG";
+      setEditedContact((prev) => prev ? { ...prev, photo: dataUrl, photoType } : prev);
+      setIsDirty(true);
+    };
+    reader.readAsDataURL(file);
+    e.target.value = "";
+  };
+
+  // ─── Render ────────────────────────────────────────────────────────────────
   return (
     <div className="h-screen bg-background flex flex-col overflow-hidden">
-      {/* Header */}
+
+      {/* ── Header ── */}
       <motion.header
-        initial={{ y: -20, opacity: 0 }}
-        animate={{ y: 0, opacity: 1 }}
-        transition={{ duration: 0.4 }}
-        className="border-b border-border bg-card px-6 py-4 flex items-center justify-between shadow-sm"
+        initial={{ y: -20, opacity: 0 }} animate={{ y: 0, opacity: 1 }} transition={{ duration: 0.4 }}
+        className="border-b border-border bg-card px-6 py-3 flex items-center justify-between shadow-sm flex-shrink-0"
       >
         <div className="flex items-center gap-3">
           <div className="w-8 h-8 rounded-lg bg-primary flex items-center justify-center">
             <Icon name="Contact" size={16} className="text-primary-foreground" />
           </div>
           <div>
-            <h1 className="text-lg font-semibold text-foreground">Редактор VCF файлов</h1>
+            <h1 className="text-lg font-semibold text-foreground leading-tight">Редактор VCF файлов</h1>
             {contacts.length > 0 && (
               <p className="text-xs text-muted-foreground">{fileName} · {contacts.length} контактов</p>
             )}
           </div>
         </div>
-        <div className="flex gap-2">
-          <Button variant="outline" onClick={() => fileInputRef.current?.click()} className="gap-2">
-            <Icon name="Upload" size={16} />
-            Загрузить файл
+        <div className="flex gap-2 flex-wrap justify-end">
+          {contacts.length > 0 && (
+            <>
+              <Button variant="outline" size="sm" onClick={handleRemoveEmpty} className="gap-1.5 text-xs">
+                <Icon name="UserMinus" size={14} />
+                Удалить пустые
+              </Button>
+              <Button variant="outline" size="sm" onClick={handleMergeDuplicates} className="gap-1.5 text-xs">
+                <Icon name="Merge" size={14} />
+                Объединить дубли
+              </Button>
+            </>
+          )}
+          <Button variant="outline" size="sm" onClick={() => fileInputRef.current?.click()} className="gap-1.5">
+            <Icon name="Upload" size={15} />
+            Загрузить
           </Button>
-          <Button onClick={handleDownload} disabled={contacts.length === 0} className="gap-2">
-            <Icon name="Download" size={16} />
-            Скачать файл
+          <Button size="sm" onClick={handleDownload} disabled={contacts.length === 0} className="gap-1.5">
+            <Icon name="Download" size={15} />
+            Скачать
           </Button>
           <input ref={fileInputRef} type="file" accept=".vcf,.vcard" className="hidden" onChange={handleFileLoad} />
+          <input ref={photoInputRef} type="file" accept="image/*" className="hidden" onChange={handlePhotoUpload} />
         </div>
       </motion.header>
 
-      {/* Main content */}
-      <div className="flex flex-1 overflow-hidden">
+      {/* ── Main ── */}
+      <div className="flex flex-1 overflow-hidden min-h-0">
         {contacts.length === 0 ? (
-          // Empty state
           <motion.div
-            initial={{ opacity: 0, scale: 0.97 }}
-            animate={{ opacity: 1, scale: 1 }}
-            transition={{ duration: 0.5 }}
+            initial={{ opacity: 0, scale: 0.97 }} animate={{ opacity: 1, scale: 1 }} transition={{ duration: 0.5 }}
             className="flex-1 flex flex-col items-center justify-center gap-6 text-center px-4"
           >
             <div className="w-20 h-20 rounded-2xl bg-muted flex items-center justify-center">
@@ -337,48 +443,61 @@ export default function VcfEditor() {
             </div>
             <div>
               <h2 className="text-2xl font-semibold text-foreground mb-2">Загрузите VCF файл</h2>
-              <p className="text-muted-foreground max-w-sm">
-                Нажмите «Загрузить файл» в верхнем меню, чтобы открыть книгу контактов и начать редактирование
-              </p>
+              <p className="text-muted-foreground max-w-sm">Нажмите кнопку ниже, чтобы открыть книгу контактов</p>
             </div>
             <Button variant="outline" size="lg" onClick={() => fileInputRef.current?.click()} className="gap-2">
-              <Icon name="Upload" size={18} />
-              Выбрать файл
+              <Icon name="Upload" size={18} />Выбрать файл
             </Button>
           </motion.div>
         ) : (
           <>
-            {/* Left panel — contacts list */}
+            {/* ── Left: contact list ── */}
             <motion.aside
-              initial={{ x: -20, opacity: 0 }}
-              animate={{ x: 0, opacity: 1 }}
-              transition={{ duration: 0.4, delay: 0.1 }}
-              className="w-72 border-r border-border bg-card flex flex-col min-h-0"
+              initial={{ x: -20, opacity: 0 }} animate={{ x: 0, opacity: 1 }} transition={{ duration: 0.4, delay: 0.1 }}
+              className="w-72 border-r border-border bg-card flex flex-col min-h-0 flex-shrink-0"
             >
-              <div className="px-4 py-3 border-b border-border">
-                <p className="text-sm font-medium text-muted-foreground uppercase tracking-wide">Контакты</p>
+              {/* Search */}
+              <div className="px-3 py-2 border-b border-border space-y-2 flex-shrink-0">
+                <div className="relative">
+                  <Icon name="Search" size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-muted-foreground" />
+                  <Input
+                    value={search}
+                    onChange={(e) => setSearch(e.target.value)}
+                    placeholder="Поиск по ФИО или номеру…"
+                    className="pl-8 h-8 text-sm bg-background"
+                  />
+                  {search && (
+                    <button onClick={() => setSearch("")} className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground">
+                      <Icon name="X" size={13} />
+                    </button>
+                  )}
+                </div>
+                <p className="text-xs text-muted-foreground px-0.5">
+                  {filtered.length} из {contacts.length}
+                </p>
               </div>
-              <ScrollArea className="flex-1">
+
+              <ScrollArea className="flex-1 min-h-0">
                 <div className="p-2">
                   <AnimatePresence>
-                    {contacts.map((contact, i) => (
+                    {filtered.map((contact, i) => (
                       <ContextMenu key={contact.id}>
                         <ContextMenuTrigger asChild>
                           <motion.button
-                            initial={{ opacity: 0, x: -10 }}
-                            animate={{ opacity: 1, x: 0 }}
-                            transition={{ delay: i * 0.03 }}
+                            initial={{ opacity: 0, x: -10 }} animate={{ opacity: 1, x: 0 }} transition={{ delay: i * 0.02 }}
                             onClick={() => trySelectContact(contact.id)}
-                            className={`w-full text-left px-3 py-2.5 rounded-lg mb-1 flex items-center gap-3 transition-all ${
-                              selectedId === contact.id
-                                ? "bg-primary text-primary-foreground"
-                                : "hover:bg-muted text-foreground"
+                            className={`w-full text-left px-3 py-2 rounded-lg mb-0.5 flex items-center gap-3 transition-all ${
+                              selectedId === contact.id ? "bg-primary text-primary-foreground" : "hover:bg-muted text-foreground"
                             }`}
                           >
-                            <div className={`w-8 h-8 rounded-full flex items-center justify-center text-sm font-semibold flex-shrink-0 ${
+                            {/* Avatar */}
+                            <div className={`w-8 h-8 rounded-full flex-shrink-0 overflow-hidden flex items-center justify-center text-sm font-semibold ${
                               selectedId === contact.id ? "bg-primary-foreground/20 text-primary-foreground" : "bg-muted text-muted-foreground"
                             }`}>
-                              {contact.fn.charAt(0).toUpperCase() || "?"}
+                              {contact.photo
+                                ? <img src={contact.photo} alt="" className="w-full h-full object-cover" />
+                                : contact.fn.charAt(0).toUpperCase() || "?"
+                              }
                             </div>
                             <div className="min-w-0">
                               <p className="text-sm font-medium truncate">{contact.fn}</p>
@@ -391,81 +510,80 @@ export default function VcfEditor() {
                           </motion.button>
                         </ContextMenuTrigger>
                         <ContextMenuContent>
-                          <ContextMenuItem
-                            className="text-destructive focus:text-destructive gap-2"
-                            onClick={() => handleDelete(contact.id)}
-                          >
-                            <Icon name="Trash2" size={14} />
-                            Удалить контакт
+                          <ContextMenuItem className="text-destructive focus:text-destructive gap-2" onClick={() => handleDelete(contact.id)}>
+                            <Icon name="Trash2" size={14} />Удалить контакт
                           </ContextMenuItem>
                         </ContextMenuContent>
                       </ContextMenu>
                     ))}
                   </AnimatePresence>
+                  {filtered.length === 0 && (
+                    <p className="text-center text-muted-foreground text-sm py-8">Ничего не найдено</p>
+                  )}
                 </div>
               </ScrollArea>
             </motion.aside>
 
-            {/* Right panel — editor */}
+            {/* ── Right: editor ── */}
             <div className="flex-1 flex flex-col overflow-hidden min-h-0">
               <AnimatePresence mode="wait">
                 {editedContact ? (
                   <motion.div
                     key={editedContact.id}
-                    initial={{ opacity: 0 }}
-                    animate={{ opacity: 1 }}
-                    exit={{ opacity: 0 }}
-                    transition={{ duration: 0.15 }}
+                    initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={{ duration: 0.15 }}
                     className="flex-1 flex flex-col overflow-hidden min-h-0"
                   >
-                    <div className="px-6 py-4 border-b border-border flex items-center gap-3">
-                      <div className="w-10 h-10 rounded-full bg-primary flex items-center justify-center text-primary-foreground font-semibold">
-                        {editedContact.fn.charAt(0).toUpperCase() || "?"}
+                    {/* Editor header */}
+                    <div className="px-6 py-3 border-b border-border flex items-center gap-3 flex-shrink-0">
+                      <div
+                        className="w-10 h-10 rounded-full bg-primary flex items-center justify-center text-primary-foreground font-semibold overflow-hidden cursor-pointer flex-shrink-0"
+                        onClick={() => photoInputRef.current?.click()}
+                        title="Нажмите для смены фото"
+                      >
+                        {editedContact.photo
+                          ? <img src={editedContact.photo} alt="" className="w-full h-full object-cover" />
+                          : <span>{editedContact.fn.charAt(0).toUpperCase() || "?"}</span>
+                        }
                       </div>
-                      <div>
-                        <h2 className="font-semibold text-foreground">{editedContact.fn || "Без имени"}</h2>
-                        <p className="text-xs text-muted-foreground">Редактирование реквизитов</p>
+                      <div className="min-w-0">
+                        <h2 className="font-semibold text-foreground truncate">{editedContact.fn || "Без имени"}</h2>
+                        <p className="text-xs text-muted-foreground">Нажмите на аватар для смены фото</p>
                       </div>
                       {isDirty && (
-                        <span className="ml-auto text-xs bg-amber-100 text-amber-700 px-2 py-0.5 rounded-full font-medium">Есть изменения</span>
+                        <Badge variant="outline" className="ml-auto text-amber-600 border-amber-300 bg-amber-50 flex-shrink-0">
+                          Есть изменения
+                        </Badge>
                       )}
                     </div>
 
-                    <ScrollArea className="flex-1">
-                      <div className="p-6 grid grid-cols-1 sm:grid-cols-2 gap-5">
-                        {/* ФИО — три поля в одну строку */}
-                        <div className="sm:col-span-2 space-y-1.5">
+                    {/* Fields */}
+                    <ScrollArea className="flex-1 min-h-0">
+                      <div className="p-6 space-y-5">
+
+                        {/* ФИО */}
+                        <div className="space-y-1.5">
                           <Label className="flex items-center gap-1.5 text-sm text-muted-foreground">
-                            <Icon name="UserCheck" fallback="Circle" size={13} />
-                            ФИО
+                            <Icon name="UserCheck" fallback="Circle" size={13} />ФИО
                           </Label>
                           <div className="grid grid-cols-3 gap-2">
-                            <Input
-                              value={editedContact.lastName}
-                              onChange={(e) => handleFieldChange("lastName", e.target.value)}
-                              placeholder="Фамилия"
-                              className="bg-background"
-                            />
-                            <Input
-                              value={editedContact.firstName}
-                              onChange={(e) => handleFieldChange("firstName", e.target.value)}
-                              placeholder="Имя"
-                              className="bg-background"
-                            />
-                            <Input
-                              value={editedContact.middleName}
-                              onChange={(e) => handleFieldChange("middleName", e.target.value)}
-                              placeholder="Отчество"
-                              className="bg-background"
-                            />
+                            <Input value={editedContact.lastName}   onChange={(e) => handleFieldChange("lastName", e.target.value)}   placeholder="Фамилия"  className="bg-background" />
+                            <Input value={editedContact.firstName}  onChange={(e) => handleFieldChange("firstName", e.target.value)}  placeholder="Имя"      className="bg-background" />
+                            <Input value={editedContact.middleName} onChange={(e) => handleFieldChange("middleName", e.target.value)} placeholder="Отчество" className="bg-background" />
                           </div>
                         </div>
 
-                        {/* Phones block */}
-                        <div className="space-y-2 sm:col-span-2">
+                        {/* Отображаемое имя */}
+                        <div className="space-y-1.5">
                           <Label className="flex items-center gap-1.5 text-sm text-muted-foreground">
-                            <Icon name="Phone" fallback="Circle" size={13} />
-                            Телефоны
+                            <Icon name="User" fallback="Circle" size={13} />Отображаемое имя
+                          </Label>
+                          <Input value={editedContact.fn} onChange={(e) => handleFieldChange("fn", e.target.value)} placeholder="Отображаемое имя" className="bg-background" />
+                        </div>
+
+                        {/* Телефоны */}
+                        <div className="space-y-2">
+                          <Label className="flex items-center gap-1.5 text-sm text-muted-foreground">
+                            <Icon name="Phone" fallback="Circle" size={13} />Телефоны
                           </Label>
                           {editedContact.phones.map((phone, idx) => (
                             <div key={idx} className="flex gap-2">
@@ -480,85 +598,150 @@ export default function VcfEditor() {
                                 className="bg-background"
                               />
                               {editedContact.phones.length > 1 && (
-                                <Button
-                                  variant="ghost"
-                                  size="icon"
-                                  className="text-muted-foreground hover:text-destructive"
-                                  onClick={() => {
-                                    const updated = editedContact.phones.filter((_, i) => i !== idx);
-                                    handleFieldChange("phones", updated);
-                                  }}
-                                >
+                                <Button variant="ghost" size="icon" className="text-muted-foreground hover:text-destructive flex-shrink-0"
+                                  onClick={() => handleFieldChange("phones", editedContact.phones.filter((_, i) => i !== idx))}>
                                   <Icon name="X" size={15} />
                                 </Button>
                               )}
                             </div>
                           ))}
-                          {editedContact.phones.length < 5 && (
-                            <Button
-                              variant="ghost"
-                              size="sm"
-                              className="gap-1.5 text-muted-foreground"
-                              onClick={() => {
-                                const updated = [...editedContact.phones, ""];
-                                handleFieldChange("phones", updated);
-                              }}
-                            >
-                              <Icon name="Plus" size={13} />
-                              Добавить телефон
+                          {editedContact.phones.length < 10 && (
+                            <Button variant="ghost" size="sm" className="gap-1.5 text-muted-foreground"
+                              onClick={() => handleFieldChange("phones", [...editedContact.phones, ""])}>
+                              <Icon name="Plus" size={13} />Добавить телефон
                             </Button>
                           )}
                         </div>
 
-                        {/* Single-value fields */}
-                        {singleFields.map((field) => (
-                          <div key={field.key} className="space-y-1.5">
+                        {/* Email */}
+                        <div className="space-y-2">
+                          <Label className="flex items-center gap-1.5 text-sm text-muted-foreground">
+                            <Icon name="Mail" fallback="Circle" size={13} />Email
+                          </Label>
+                          {editedContact.emails.length === 0
+                            ? <Button variant="ghost" size="sm" className="gap-1.5 text-muted-foreground"
+                                onClick={() => handleFieldChange("emails", [""])}>
+                                <Icon name="Plus" size={13} />Добавить email
+                              </Button>
+                            : editedContact.emails.map((email, idx) => (
+                              <div key={idx} className="flex gap-2">
+                                <Input
+                                  value={email}
+                                  onChange={(e) => {
+                                    const updated = [...editedContact.emails];
+                                    updated[idx] = e.target.value;
+                                    handleFieldChange("emails", updated);
+                                  }}
+                                  placeholder="email@example.com"
+                                  className="bg-background"
+                                />
+                                <Button variant="ghost" size="icon" className="text-muted-foreground hover:text-destructive flex-shrink-0"
+                                  onClick={() => handleFieldChange("emails", editedContact.emails.filter((_, i) => i !== idx))}>
+                                  <Icon name="X" size={15} />
+                                </Button>
+                              </div>
+                            ))
+                          }
+                          {editedContact.emails.length > 0 && editedContact.emails.length < 5 && (
+                            <Button variant="ghost" size="sm" className="gap-1.5 text-muted-foreground"
+                              onClick={() => handleFieldChange("emails", [...editedContact.emails, ""])}>
+                              <Icon name="Plus" size={13} />Добавить email
+                            </Button>
+                          )}
+                        </div>
+
+                        {/* 2-column fields */}
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                          {[
+                            { key: "org",      label: "Организация", icon: "Building2"  },
+                            { key: "title",    label: "Должность",   icon: "Briefcase"  },
+                            { key: "birthday", label: "Дата рождения (ГГГГ-ММ-ДД)", icon: "Cake" },
+                            { key: "url",      label: "Сайт / URL",  icon: "Globe"      },
+                            { key: "address",  label: "Адрес",       icon: "MapPin"     },
+                          ].map(({ key, label, icon }) => (
+                            <div key={key} className="space-y-1.5">
+                              <Label className="flex items-center gap-1.5 text-sm text-muted-foreground">
+                                <Icon name={icon} fallback="Circle" size={13} />{label}
+                              </Label>
+                              <Input
+                                value={(editedContact[key as keyof VcfContact] as string) || ""}
+                                onChange={(e) => handleFieldChange(key, e.target.value)}
+                                placeholder={label}
+                                className="bg-background"
+                              />
+                            </div>
+                          ))}
+                        </div>
+
+                        {/* Note */}
+                        <div className="space-y-1.5">
+                          <Label className="flex items-center gap-1.5 text-sm text-muted-foreground">
+                            <Icon name="FileText" fallback="Circle" size={13} />Заметка
+                          </Label>
+                          <Input value={editedContact.note} onChange={(e) => handleFieldChange("note", e.target.value)} placeholder="Заметка" className="bg-background" />
+                        </div>
+
+                        {/* Extra fields (read-only display) */}
+                        {editedContact.extraFields.length > 0 && (
+                          <div className="space-y-2">
                             <Label className="flex items-center gap-1.5 text-sm text-muted-foreground">
-                              <Icon name={field.icon} fallback="Circle" size={13} />
-                              {field.label}
+                              <Icon name="Tag" fallback="Circle" size={13} />Дополнительные поля
                             </Label>
-                            <Input
-                              value={(editedContact[field.key as keyof VcfContact] as string) || ""}
-                              onChange={(e) => handleFieldChange(field.key, e.target.value)}
-                              placeholder={field.label}
-                              className="bg-background"
-                            />
+                            <div className="rounded-lg border border-border divide-y divide-border">
+                              {editedContact.extraFields.map((f, idx) => (
+                                <div key={idx} className="flex items-start gap-3 px-3 py-2 text-sm">
+                                  <span className="text-muted-foreground font-mono text-xs w-32 flex-shrink-0 pt-0.5">{f.key}</span>
+                                  <span className="text-foreground break-all">{f.value}</span>
+                                </div>
+                              ))}
+                            </div>
                           </div>
-                        ))}
+                        )}
+
+                        {/* Photo controls */}
+                        <div className="space-y-2">
+                          <Label className="flex items-center gap-1.5 text-sm text-muted-foreground">
+                            <Icon name="Image" fallback="Circle" size={13} />Фото
+                          </Label>
+                          {editedContact.photo ? (
+                            <div className="flex items-center gap-3">
+                              <img src={editedContact.photo} alt="Фото контакта" className="w-16 h-16 rounded-lg object-cover border border-border" />
+                              <div className="flex flex-col gap-2">
+                                <Button variant="outline" size="sm" onClick={() => photoInputRef.current?.click()} className="gap-1.5">
+                                  <Icon name="ImagePlus" size={14} />Сменить фото
+                                </Button>
+                                <Button variant="ghost" size="sm" className="gap-1.5 text-destructive hover:text-destructive"
+                                  onClick={() => handleFieldChange("photo", "")}>
+                                  <Icon name="Trash2" size={14} />Удалить фото
+                                </Button>
+                              </div>
+                            </div>
+                          ) : (
+                            <Button variant="outline" size="sm" onClick={() => photoInputRef.current?.click()} className="gap-1.5">
+                              <Icon name="ImagePlus" size={14} />Добавить фото
+                            </Button>
+                          )}
+                        </div>
+
                       </div>
                     </ScrollArea>
 
                     {/* Bottom actions */}
-                    <motion.div
-                      initial={{ y: 20, opacity: 0 }}
-                      animate={{ y: 0, opacity: 1 }}
-                      className="px-6 py-4 border-t border-border bg-card flex items-center gap-3"
-                    >
+                    <div className="px-6 py-3 border-t border-border bg-card flex items-center gap-3 flex-shrink-0">
                       <Button onClick={handleSave} disabled={!isDirty} className="gap-2">
-                        <Icon name="Save" size={15} />
-                        Сохранить изменения
+                        <Icon name="Save" size={15} />Сохранить
                       </Button>
                       <Button variant="outline" onClick={handleCancel} disabled={!isDirty} className="gap-2">
-                        <Icon name="RotateCcw" size={15} />
-                        Отменить
+                        <Icon name="RotateCcw" size={15} />Отменить
                       </Button>
-                      <Button
-                        variant="destructive"
-                        onClick={() => editedContact && handleDelete(editedContact.id)}
-                        className="gap-2 ml-auto"
-                      >
-                        <Icon name="Trash2" size={15} />
-                        Удалить контакт
+                      <Button variant="destructive" onClick={() => editedContact && handleDelete(editedContact.id)} className="gap-2 ml-auto">
+                        <Icon name="Trash2" size={15} />Удалить контакт
                       </Button>
-                    </motion.div>
+                    </div>
                   </motion.div>
                 ) : (
-                  <motion.div
-                    key="empty"
-                    initial={{ opacity: 0 }}
-                    animate={{ opacity: 1 }}
-                    className="flex-1 flex items-center justify-center flex-col gap-3 text-center px-4"
-                  >
+                  <motion.div key="empty" initial={{ opacity: 0 }} animate={{ opacity: 1 }}
+                    className="flex-1 flex items-center justify-center flex-col gap-3 text-center px-4">
                     <Icon name="MousePointerClick" size={36} className="text-muted-foreground" />
                     <p className="text-muted-foreground text-sm">Выберите контакт из списка слева для редактирования</p>
                   </motion.div>
@@ -569,19 +752,32 @@ export default function VcfEditor() {
         )}
       </div>
 
-      {/* Save dialog */}
+      {/* ── Save dialog ── */}
       <AlertDialog open={showDialog} onOpenChange={setShowDialog}>
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle>Сохранить изменения?</AlertDialogTitle>
-            <AlertDialogDescription>
-              Вы переходите к другому контакту. Сохранить изменения в текущем контакте?
-            </AlertDialogDescription>
+            <AlertDialogDescription>Вы переходите к другому контакту. Сохранить изменения в текущем?</AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel onClick={() => { setShowDialog(false); setPendingId(null); }}>Отмена</AlertDialogCancel>
             <Button variant="outline" onClick={handleDialogDiscard}>Не сохранять</Button>
             <AlertDialogAction onClick={handleDialogSave}>Сохранить</AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* ── Merge result dialog ── */}
+      <AlertDialog open={!!mergeInfo} onOpenChange={() => setMergeInfo(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Объединение завершено</AlertDialogTitle>
+            <AlertDialogDescription>
+              Удалено дублей: <strong>{mergeInfo?.count}</strong>. Телефоны и email объединены в один контакт.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogAction onClick={() => setMergeInfo(null)}>Отлично</AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
