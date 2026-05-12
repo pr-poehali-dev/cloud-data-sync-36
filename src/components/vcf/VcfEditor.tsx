@@ -151,7 +151,7 @@ function formatExtraFieldValue(key: string, value: string): string {
       const match = dateStr.match(/^(\d{4})-(\d{2})-(\d{2})/);
       if (match) {
         const [, y, m, d] = match;
-        return `${d}.${m}.${y}`;
+        return `День рождения: ${d}.${m}.${y}`;
       }
       return dateStr || value;
     }
