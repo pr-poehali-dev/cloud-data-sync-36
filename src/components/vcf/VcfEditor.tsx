@@ -234,12 +234,22 @@ export default function VcfEditor() {
 
   // ── filtered list ──
   const filtered = contacts.filter((c) => {
-    if (!search.trim()) return true;
-    const q = search.trim().toLowerCase();
-    return (
-      c.fn.toLowerCase().includes(q) ||
-      c.phones.some((p) => p.replace(/\D/g, "").includes(q.replace(/\D/g, "")))
-    );
+    const q = search.trim();
+    if (!q) return true;
+    const qLower = q.toLowerCase();
+    const qDigits = q.replace(/\D/g, "");
+
+    const matchName =
+      c.fn.toLowerCase().includes(qLower) ||
+      c.lastName.toLowerCase().includes(qLower) ||
+      c.firstName.toLowerCase().includes(qLower) ||
+      c.middleName.toLowerCase().includes(qLower);
+
+    const matchPhone =
+      qDigits.length > 0 &&
+      c.phones.some((p) => p.replace(/\D/g, "").includes(qDigits));
+
+    return matchName || matchPhone;
   });
 
   // ── file load ──
