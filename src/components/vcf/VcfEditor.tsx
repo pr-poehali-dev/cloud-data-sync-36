@@ -105,6 +105,73 @@ const KNOWN_KEYS = new Set([
   "ORG", "TITLE", "NOTE", "PHOTO", "BDAY", "ADR", "URL",
 ]);
 
+const X_FIELD_LABELS: Record<string, string> = {
+  "X-STARRED":           "Избранный",
+  "X-ANDROID-CUSTOM":    "Доп. данные (Android)",
+  "X-GOOGLE-TALK":       "Google Talk",
+  "X-JABBER":            "Jabber",
+  "X-ICQ":               "ICQ",
+  "X-MSN":               "MSN",
+  "X-AIM":               "AIM",
+  "X-YAHOO":             "Yahoo",
+  "X-SKYPE":             "Skype",
+  "X-SKYPE-USERNAME":    "Skype",
+  "X-TWITTER":           "Twitter",
+  "X-FACEBOOK":          "Facebook",
+  "X-INSTAGRAM":         "Instagram",
+  "X-TELEGRAM":          "Telegram",
+  "X-WHATSAPP":          "WhatsApp",
+  "X-VIBER":             "Viber",
+  "X-NICKNAME":          "Псевдоним",
+  "X-SPOUSE":            "Супруг(а)",
+  "X-MANAGER-NAME":      "Менеджер",
+  "X-ASSISTANT":         "Ассистент",
+  "X-ANNIVERSARY":       "Годовщина",
+  "CATEGORIES":          "Категории",
+  "X-PHONETIC-FIRST-NAME": "Фонетическое имя",
+  "X-PHONETIC-LAST-NAME":  "Фонетическая фамилия",
+  "X-PHONETIC-ORG":        "Фонетическая организация",
+};
+
+function formatExtraFieldLabel(key: string): string {
+  const upper = key.toUpperCase();
+  return X_FIELD_LABELS[upper] || key;
+}
+
+function formatExtraFieldValue(key: string, value: string): string {
+  const upper = key.toUpperCase();
+  if (upper === "X-STARRED") {
+    return value === "1" ? "Да (избранный)" : "Нет";
+  }
+  if (upper === "X-ANDROID-CUSTOM") {
+    const parts = value.split(";");
+    const type = parts[0] || "";
+    if (type === "vnd.android.cursor.item/contact_event") {
+      const dateStr = parts[1] || "";
+      const match = dateStr.match(/^(\d{4})-(\d{2})-(\d{2})/);
+      if (match) {
+        const [, y, m, d] = match;
+        return `${d}.${m}.${y}`;
+      }
+      return dateStr || value;
+    }
+    if (type.includes("relation")) {
+      return `Связь: ${parts[1] || value}`;
+    }
+    return parts.filter(Boolean).join(" · ") || value;
+  }
+  return value;
+}
+
+const HIDDEN_X_KEYS = new Set(["X-IRMC-LUID", "X-RECORD-CLASS", "X-ABLabel"]);
+
+function shouldShowExtraField(key: string, value: string): boolean {
+  const upper = key.toUpperCase();
+  if (HIDDEN_X_KEYS.has(upper)) return false;
+  if (!value.trim()) return false;
+  return true;
+}
+
 function isKnownKey(line: string): boolean {
   const key = line.split(/[;:]/)[0].toUpperCase();
   return KNOWN_KEYS.has(key);
@@ -795,16 +862,18 @@ export default function VcfEditor() {
                         </div>
 
                         {/* Extra fields (read-only display) */}
-                        {editedContact.extraFields.length > 0 && (
+                        {editedContact.extraFields.filter((f) => shouldShowExtraField(f.key, f.value)).length > 0 && (
                           <div className="space-y-2">
                             <Label className="flex items-center gap-1.5 text-sm text-muted-foreground">
                               <Icon name="Tag" fallback="Circle" size={13} />Дополнительные поля
                             </Label>
                             <div className="rounded-lg border border-border divide-y divide-border">
-                              {editedContact.extraFields.map((f, idx) => (
+                              {editedContact.extraFields
+                                .filter((f) => shouldShowExtraField(f.key, f.value))
+                                .map((f, idx) => (
                                 <div key={idx} className="flex items-start gap-3 px-3 py-2 text-sm">
-                                  <span className="text-muted-foreground font-mono text-xs w-32 flex-shrink-0 pt-0.5">{f.key}</span>
-                                  <span className="text-foreground break-all">{f.value}</span>
+                                  <span className="text-muted-foreground text-xs w-32 flex-shrink-0 pt-0.5">{formatExtraFieldLabel(f.key)}</span>
+                                  <span className="text-foreground break-all">{formatExtraFieldValue(f.key, f.value)}</span>
                                 </div>
                               ))}
                             </div>
