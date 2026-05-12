@@ -185,7 +185,7 @@ export default function VcfEditor() {
   const [isDirty, setIsDirty] = useState(false);
   const [pendingId, setPendingId] = useState<string | null>(null);
   const [showDialog, setShowDialog] = useState(false);
-  const [deleteId, setDeleteId] = useState<string | null>(null);
+
   const [fileName, setFileName] = useState("contacts.vcf");
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -199,6 +199,7 @@ export default function VcfEditor() {
     reader.onload = (ev) => {
       const text = ev.target?.result as string;
       const parsed = parseVcf(text);
+      parsed.sort((a, b) => a.fn.localeCompare(b.fn, "ru", { sensitivity: "base" }));
       setContacts(parsed);
       setSelectedId(null);
       setEditedContact(null);
@@ -277,16 +278,14 @@ export default function VcfEditor() {
     setIsDirty(true);
   };
 
-  const handleDeleteConfirm = () => {
-    if (!deleteId) return;
-    const remaining = contacts.filter((c) => c.id !== deleteId);
+  const handleDelete = (id: string) => {
+    const remaining = contacts.filter((c) => c.id !== id);
     setContacts(remaining);
-    if (selectedId === deleteId) {
+    if (selectedId === id) {
       setSelectedId(null);
       setEditedContact(null);
       setIsDirty(false);
     }
-    setDeleteId(null);
   };
 
   return (
@@ -393,7 +392,7 @@ export default function VcfEditor() {
                         <ContextMenuContent>
                           <ContextMenuItem
                             className="text-destructive focus:text-destructive gap-2"
-                            onClick={() => setDeleteId(contact.id)}
+                            onClick={() => handleDelete(contact.id)}
                           >
                             <Icon name="Trash2" size={14} />
                             Удалить контакт
@@ -516,7 +515,7 @@ export default function VcfEditor() {
                       </Button>
                       <Button
                         variant="destructive"
-                        onClick={() => editedContact && setDeleteId(editedContact.id)}
+                        onClick={() => editedContact && handleDelete(editedContact.id)}
                         className="gap-2 ml-auto"
                       >
                         <Icon name="Trash2" size={15} />
@@ -540,27 +539,6 @@ export default function VcfEditor() {
           </>
         )}
       </div>
-
-      {/* Delete dialog */}
-      <AlertDialog open={!!deleteId} onOpenChange={(open) => !open && setDeleteId(null)}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Удалить контакт?</AlertDialogTitle>
-            <AlertDialogDescription>
-              Контакт «{contacts.find((c) => c.id === deleteId)?.fn}» будет удалён безвозвратно.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel>Отмена</AlertDialogCancel>
-            <AlertDialogAction
-              onClick={handleDeleteConfirm}
-              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-            >
-              Удалить
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
 
       {/* Save dialog */}
       <AlertDialog open={showDialog} onOpenChange={setShowDialog}>
